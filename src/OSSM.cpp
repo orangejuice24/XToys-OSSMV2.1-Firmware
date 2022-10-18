@@ -107,7 +107,7 @@ void OSSM::RunUI()
     const auto speed_percent = static_cast<int>(speed_percent_ * 100);
     const auto stroke_percent = static_cast<int>(stroke_percent_ * 100 + 0.5f);
 
-    LogDebugFormatted("Update: Speed: %d, Stroke: %d", speed_percent, stroke_percent);
+    // LogDebugFormatted("Update end @ %ld: Speed: %d, Stroke: %d", millis(), speed_percent, stroke_percent);
 
     if (!setup_done_)
     {
@@ -116,7 +116,8 @@ void OSSM::RunUI()
 
     if (active_run_mode_ == RunMode::StrokeEngine)
     {
-        if (encoder_switch_changed_ && encoder_switch_state_)
+        // If the switch changed, and it was released, and it was not a long press
+        if (encoder_switch_changed_ && !encoder_switch_state_ && !is_long_press_)
         {
             LogDebug("Incrementing pattern");
 
@@ -129,6 +130,9 @@ void OSSM::RunUI()
 
             ui_.UpdateMessage(stroke_engine_.getPatternName(next_pattern));
         }
+
+        ui_.UpdateEncoderSelection(encoder_switch_state_ && is_long_press_);
+        ui_.UpdateSensation(sensation_value_);
     }
 
     ui_.UpdateState(speed_percent, stroke_percent);
@@ -237,12 +241,8 @@ bool OSSM::FindHome()
 
 bool OSSM::DoSensorlessHoming()
 {
-    // TODO: Determine why the current values here don't correlate well with the force on the motor
-    LogError("Not Yet Implemented");
-    return false;
-
-    // TODO: Recalculate this with the data sheet and the new GetAnalogAveragePercent
-    constexpr float CURRENT_LIMIT = 1.5;
+    // TODO: Is there a better value for
+    constexpr float CURRENT_LIMIT = 0.03;
 
     // Set acceleration and enable stepper
     stepper_->setAcceleration(1000 * motor_properties_.stepsPerMillimeter);
@@ -257,41 +257,28 @@ bool OSSM::DoSensorlessHoming()
     LogDebugFormatted("Finding home sensorless, Current: Offset: %0.4f, Value: %0.4f", current_sensor_offset,
                       current_value);
 
-    stepper_->setSpeedInHz(/*25*/ 10 * motor_properties_.stepsPerMillimeter);
-    // stepper_->runForward();
+    stepper_->setSpeedInHz(25 * motor_properties_.stepsPerMillimeter);
 
     while (current_value < CURRENT_LIMIT)
     {
-        current_value = GetAnalogAveragePercent(CURRENT_SENSOR_PIN, 50) - current_sensor_offset;
-        const auto position = stepper_->getCurrentPosition();
+        while (stepper_->isRunning() && current_value < CURRENT_LIMIT)
+        {
+            current_value = GetAnalogAveragePercent(CURRENT_SENSOR_PIN, 100) - current_sensor_offset;
+            // LogDebugFormatted("%0.4f", current_value);
+        }
 
-        LogDebugFormatted("  Current %0.4f, Position: %d", current_value, position);
-        stepper_->move(10);
-        vTaskDelay(50);
+        if (current_value >= CURRENT_LIMIT)
+        {
+            break;
+        }
+
+        stepper_->move(25 * motor_properties_.stepsPerMillimeter);
     }
 
     stepper_->forceStopAndNewPosition(0);
-    stepper_->move(-5 * motor_properties_.stepsPerMillimeter);
-    current_value = 0;
+    stepper_->move(-geometry_.keepoutBoundary * motor_properties_.stepsPerMillimeter);
 
-    LogDebug("Current limit hit. Finding other end");
-
-    while (current_value < CURRENT_LIMIT)
-    {
-        current_value = GetAnalogAveragePercent(CURRENT_SENSOR_PIN, 50) - current_sensor_offset;
-        const auto position = stepper_->getCurrentPosition();
-
-        LogDebugFormatted("  Current %0.4f, Position: %d", current_value, position);
-        stepper_->move(-10);
-        vTaskDelay(50);
-    }
-
-    stepper_->move(5 * motor_properties_.stepsPerMillimeter);
-
-    LogDebug("Current limit hit");
-
-    // travel_ = stepper_->getCurrentPosition();
-    LogDebugFormatted("Position: %d", stepper_->getCurrentPosition());
+    LogDebug("Current limit hit. Homing complete");
 
     return true;
 }
@@ -441,13 +428,16 @@ void OSSM::ModeSpecificSetup()
         case OSSM::RunMode::StrokeEngine:
             // Takes control of stepper
             stroke_engine_.begin(&geometry_, &motor_properties_, stepper_);
-            
-            // We have driven free from the limit switch so we are at MAX_TRAVEL for Stroke Engine
-            stroke_engine_.thisIsHome(5.0, false);
 
             stroke_engine_.setSpeed(0, true);
             stroke_engine_.setDepth(travel_in_mm_, true);
             stroke_engine_.setStroke(0, true);
+
+            // We have driven free from the limit switch so we are at MAX_TRAVEL for Stroke Engine
+            stroke_engine_.thisIsHome(5.0, false, true);
+
+            ui_.SwitchToStrokeEngineUi();
+            ui_.UpdateMessage(stroke_engine_.getPatternName(stroke_engine_.getPattern()));
             break;
 
 #ifdef OSSM_XTOYS
@@ -514,14 +504,16 @@ void OSSM::RunStrokeEngine()
 
     const float target_speed = speed_percent_ * STROKE_ENGINE_MAX_STROKES_PER_MIN;
     const float target_stroke = stroke_percent_ * travel_in_mm_;
+    const float target_sensation = static_cast<float>(sensation_value_);
 
-    bool pattern_changed = true;
+    bool pattern_changed = false;
 
     if (last_pattern != stroke_engine_pattern_)
     {
         LogDebugFormatted("Changing pattern from %d to %d", last_pattern, stroke_engine_pattern_);
         stroke_engine_.setPattern(stroke_engine_pattern_, false);
         stroke_engine_.startPattern();
+        pattern_changed = true;
     }
 
     if (pattern_changed || (abs(target_speed - last_target_speed_) > STROKE_ENGINE_HYSTERESIS))
@@ -536,6 +528,13 @@ void OSSM::RunStrokeEngine()
         LogDebugFormatted("Changing speed from %0.2f to %0.2f", last_target_stroke_, target_stroke);
         stroke_engine_.setStroke(target_stroke, true);
         last_target_stroke_ = target_stroke;
+    }
+
+    if (pattern_changed || (abs(target_sensation - last_sensation_value_) > STROKE_ENGINE_HYSTERESIS))
+    {
+        LogDebugFormatted("Changing sensation from %0.2f to %0.2f", last_sensation_value_, target_sensation);
+        stroke_engine_.setSensation(target_sensation, true);
+        last_sensation_value_ = target_sensation;
     }
 
     vTaskDelay(200);
@@ -633,13 +632,35 @@ void OSSM::WriteEepromSettings()
 
 void OSSM::UpdateAnalogInputs()
 {
+    const bool is_stroke_engine = active_run_mode_ == RunMode::StrokeEngine;
+
+    // Change the sensation when the button is held down
+    const bool adj_sensation = is_stroke_engine && encoder_switch_state_ && is_long_press_;
+
     speed_percent_ = GetAnalogAveragePercent(SPEED_POT_PIN, 50);
-    stroke_percent_ = GetEncoderPercentage();
+
+    const auto encoder_value = encoder_.read();
+
+    if (!adj_sensation)
+    {
+        // Adjust the stroke value if we are not adjusting the sensation
+        last_stroke_encoder_position_ = constrain(last_stroke_encoder_position_ + encoder_value, 0, 100);
+        stroke_percent_ = static_cast<float>(last_stroke_encoder_position_) / 100.0;
+    }
+    else
+    {
+        // NOTE: Sensation value is ranged from -100 to 100, so we just work with that here
+        sensation_value_ = constrain(sensation_value_ + encoder_value, -100, 100);
+    }
+
+    // Reset encoder for tracking changes instead of absolute position
+    encoder_.write(0);
 }
 
 void OSSM::UpdateEncoderButton()
 {
-    constexpr unsigned long DEBOUNCE_INTERVAL_MS = 75;
+    constexpr unsigned long DEBOUNCE_INTERVAL_MS = 50;
+    constexpr unsigned long LONG_PRESS_INTERVAL_MS = 250;
 
     const auto new_state = digitalRead(ENCODER_SWITCH);
 
@@ -653,11 +674,29 @@ void OSSM::UpdateEncoderButton()
         encoder_switch_changed_ = false;
     }
 
+    // If we are currently pressing the button and the long press interval has expired
+    if (encoder_switch_state_ && !is_long_press_ && (millis() - last_press_ms_) >= LONG_PRESS_INTERVAL_MS)
+    {
+        LogDebugFormatted("Long press started %ld", millis());
+        is_long_press_ = true;
+    }
+
     // Debounce button
-    if ((millis() - last_encoder_change_ms_) > DEBOUNCE_INTERVAL_MS)
+    if ((millis() - last_encoder_change_ms_) >= DEBOUNCE_INTERVAL_MS)
     {
         if (new_state != encoder_switch_state_)
         {
+            if (new_state)
+            {
+                // Save the time that we had a press and reset the long press state
+                last_press_ms_ = millis();
+                is_long_press_ = false;
+            }
+
+            // NOTE: Don't clear is_long_press_ on release, we use it to inform client code
+            //       that the release event was a result of a long press and that they
+            //       shouldn't react to it normally
+
             encoder_switch_state_ = new_state;
             encoder_switch_changed_ = true;
 
@@ -666,24 +705,4 @@ void OSSM::UpdateEncoderButton()
         }
     }
     last_encoder_switch_state_ = new_state;
-}
-
-float OSSM::GetEncoderPercentage()
-{
-    constexpr int ENCODER_FULL_SCALE = 100;
-
-    int position = encoder_.read();
-
-    if (position < 0)
-    {
-        encoder_.write(0);
-        position = 0;
-    }
-    else if (position > ENCODER_FULL_SCALE)
-    {
-        encoder_.write(ENCODER_FULL_SCALE);
-        position = ENCODER_FULL_SCALE;
-    }
-
-    return static_cast<float>(position) / static_cast<float>(ENCODER_FULL_SCALE);
 }

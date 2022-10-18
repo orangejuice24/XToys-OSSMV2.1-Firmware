@@ -51,11 +51,11 @@ private:
     // Hardware helper functions
     void InitInputs();
 
-    // Homing functions    
+    // Homing functions
     bool FindHome();
     bool DoSensorlessHoming();
     bool DoSensorHoming();
-    
+
     // More set up functions
     void PromptForRunMode();
     void ModeSpecificSetup();
@@ -75,8 +75,7 @@ private:
     // I/O related functions
     void UpdateAnalogInputs();
     void UpdateEncoderButton();
-    float GetEncoderPercentage();
-    
+
     enum class RunMode
     {
         Simple,
@@ -128,21 +127,30 @@ private:
     int travel_in_mm_;
     int travel_in_steps_;
 
-    // Simple penetrate variables, both are values from 0 to 1 to track 0% - 100%
+    // Controller-read variables, both are values from 0 to 1 to track 0% - 100%
     float speed_percent_{0.0};
     float stroke_percent_{0.0};
 
     // Stroke Engine variables
     StrokeEngine stroke_engine_;
     int stroke_engine_pattern_{0};
+    int sensation_value_{0}; // Holds sensation value from -100 to 100
     float last_target_speed_{0.0};
     float last_target_stroke_{0.0};
+    float last_sensation_value_{0.0};
 
-    // Encoder-related variables
+    // Encoder rotation variables
+    bool restored_encoder_position_ {false};
+    int last_stroke_encoder_position_ {0};
+    int last_sensation_encoder_position_ {0};
+
+    // Encoder button variables
     unsigned long last_encoder_change_ms_ {0};
+    unsigned long last_press_ms_ {0};
     bool encoder_switch_changed_ {false};
     bool encoder_switch_state_ {false};
     bool last_encoder_switch_state_ {false};
+    bool is_long_press_ {false};
 
     // Persistant variables and statistics
     int hardware_version_ = 10; // V2.7 = integer value 27

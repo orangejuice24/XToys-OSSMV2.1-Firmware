@@ -48,7 +48,7 @@ void setup()
     LogDebug("Setup complete");
 }
 
-void loop() {}
+void loop() { vTaskDelay(1000); }
 
 void motionCommandTask(void *)
 {

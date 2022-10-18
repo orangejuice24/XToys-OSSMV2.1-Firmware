@@ -34,9 +34,13 @@ class OssmUi
 
     void UpdateState(const int speed_percentage, const int encoder_position);
 
+    void UpdateSensation(const int sensation);
+
+    void UpdateEncoderSelection(bool is_sensation);
+
     void UpdateMessage(String message_in);
 
-    void showBootScreen();
+    void SwitchToStrokeEngineUi();
 
     void ShowFrame(uint8_t frame)
     {

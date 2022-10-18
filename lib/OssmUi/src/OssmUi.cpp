@@ -5,6 +5,8 @@
 
 volatile int s_speed_percentage = 0;
 volatile int s_encoder_position = 0;
+volatile int s_sensation = 0;
+volatile bool s_editing_sensation = false;
 String s_message = "Machine Homing";
 
 // KM logo
@@ -31,20 +33,12 @@ const uint8_t s_active_symbol[8] PROGMEM = {B00000000, B00000000, B00011000, B00
 const uint8_t s_inactive_symbol[8] PROGMEM = {B00000000, B00000000, B00000000, B00000000,
                                               B00011000, B00011000, B00000000, B00000000};
 
-// default overlays and frames
-
+// Default overlays and frames
 static void OssmUiOverlaySpeed(OLEDDisplay* display, OLEDDisplayUiState* state)
 {
     display->setTextAlignment(TEXT_ALIGN_CENTER);
     display->setFont(ArialMT_Plain_10);
     display->drawString(64, 0, "SPEED                STROKE");
-    display->drawString(64, 50, s_message);
-}
-static void OssmUiOverlayBooting(OLEDDisplay* display, OLEDDisplayUiState* state)
-{
-    display->setTextAlignment(TEXT_ALIGN_CENTER);
-    display->setFont(ArialMT_Plain_10);
-    display->drawString(64, 0, " TEST                          ");
     display->drawString(64, 50, s_message);
 }
 static void OssmUiFrameKMlogo(OLEDDisplay* display, OLEDDisplayUiState* state, int16_t x, int16_t y)
@@ -56,11 +50,49 @@ static void OssmUiFrameKMlogo(OLEDDisplay* display, OLEDDisplayUiState* state, i
     display->fillRect(106, 14 + (34 - int(s_encoder_position / 3)), 10, int(s_encoder_position / 3));
 }
 
-const size_t s_overlay_count = 1;
-OverlayCallback s_overlays[] = {OssmUiOverlaySpeed};
+// Stroke Engine overlays and frames
+static void OssmUiOverlaySensation(OLEDDisplay* display, OLEDDisplayUiState* state)
+{
+    display->setTextAlignment(TEXT_ALIGN_CENTER);
+    display->setFont(ArialMT_Plain_10);
+    display->drawString(64, 0, "SPEED    SENS    STROKE");
+    display->drawString(64, 50, s_message);
+}
+static void OssmUiFrameSensation(OLEDDisplay* display, OLEDDisplayUiState* state, int16_t x, int16_t y)
+{
+    display->fillRect(10, 14 + (34 - int(s_speed_percentage / 3)), 10, int(s_speed_percentage / 3));
 
-const size_t s_frame_count = 1;
-FrameCallback s_frames[] = {OssmUiFrameKMlogo};
+    // Draw the zero indicator for the sensation bar
+    display->drawHorizontalLine(57, 30, 14);
+
+    // Draw the sensation bar
+    if (s_sensation < 0)
+    {
+        display->fillRect(59, 30, 10, int(-s_sensation / 6));
+    }
+    else
+    {
+        display->fillRect(59, 14 + (16 - int(s_sensation / 6)), 10, int(s_sensation / 6));
+    }
+
+    // Underline stroke or sensation to show which one is being changed
+    if (s_editing_sensation)
+    {
+        display->drawHorizontalLine(50, 12, 22);
+    }
+    else
+    {
+        display->drawHorizontalLine(90, 12, 35);
+    }
+
+    display->fillRect(106, 14 + (34 - int(s_encoder_position / 3)), 10, int(s_encoder_position / 3));
+}
+
+OverlayCallback s_default_overlays[] = {OssmUiOverlaySpeed};
+FrameCallback s_default_frames[] = {OssmUiFrameKMlogo};
+
+OverlayCallback s_stroke_engine_overlays[] = {OssmUiOverlaySensation};
+FrameCallback s_stroke_engine_frames[] = {OssmUiFrameSensation};
 
 // OssmUi constructor and methods
 
@@ -78,9 +110,9 @@ OssmUi::OssmUi(uint8_t address, int sda, int scl)
     m_ui.setActiveSymbol(s_active_symbol);
     m_ui.setInactiveSymbol(s_inactive_symbol);
     // frames
-    m_ui.setFrames(s_frames, s_frame_count);
+    m_ui.setFrames(s_default_frames, sizeof(s_default_frames) / sizeof(*s_default_frames));
     // overlays
-    m_ui.setOverlays(s_overlays, s_overlay_count);
+    m_ui.setOverlays(s_default_overlays, sizeof(s_default_overlays) / sizeof(*s_default_overlays));
     // no auto transition
     m_ui.disableAutoTransition();
     // no transition animation
@@ -89,15 +121,12 @@ OssmUi::OssmUi(uint8_t address, int sda, int scl)
     m_ui.disableAllIndicators();
 }
 
-void OssmUi::showBootScreen()
+void OssmUi::SwitchToStrokeEngineUi()
 {
-    //m_ui.switchToFrame(1);
-    // const size_t s_overlay_count = 1;
-    // OverlayCallback s_overlays[] = {OssmUiOverlayBooting};
-    // const size_t s_frame_count = 1;
-    // FrameCallback s_frames[] = {OssmUiFrameKMlogo};
-    // m_ui.setFrames(s_frames, s_frame_count);
-    // m_ui.setOverlays(s_overlays, s_overlay_count);
+    m_ui.switchToFrame(1);
+
+    m_ui.setFrames(s_stroke_engine_frames, sizeof(s_stroke_engine_frames) / sizeof(*s_stroke_engine_frames));
+    m_ui.setOverlays(s_stroke_engine_overlays, sizeof(s_stroke_engine_overlays) / sizeof(*s_stroke_engine_overlays));
 }
 
 void OssmUi::SetTargetFps(uint8_t target_fps)
@@ -147,6 +176,16 @@ void OssmUi::UpdateState(const int speed_percentage, const int encoder_position)
 {
     s_speed_percentage = speed_percentage;
     s_encoder_position = encoder_position;
+}
+
+void OssmUi::UpdateSensation(const int sensation)
+{
+    s_sensation = sensation;
+}
+
+void OssmUi::UpdateEncoderSelection(bool is_sensation)
+{
+    s_editing_sensation = is_sensation;
 }
 
 void OssmUi::UpdateMessage(String message_in)
