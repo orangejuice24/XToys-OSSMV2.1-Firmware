@@ -5,6 +5,34 @@
 namespace
 {
 
+struct MovingAvg
+{
+    static const int N_SAMPLES = 256;
+
+    uint16_t sample_history_[N_SAMPLES] {0};
+    int sample_index_ {0};
+
+    uint32_t Value()
+    {
+        uint32_t sum = 0;
+
+        for (int i = 0; i < N_SAMPLES; ++i)
+        {
+            sum += sample_history_[i];
+        }
+
+        return sum / N_SAMPLES;
+    }
+
+    void AddSample(uint16_t sample_value)
+    {
+        sample_history_[sample_index_] = sample_value;
+        sample_index_ = (sample_index_ + 1) % N_SAMPLES;
+    }
+};
+
+MovingAvg CurrentSenseAvg;
+
 // Returns analog average as a percent from 0 to 1
 float GetAnalogAveragePercent(int pin_number, uint16_t sample_count)
 {
@@ -89,7 +117,6 @@ void OSSM::Setup()
 
     ModeSpecificSetup();
 
-    ui_.UpdateMessage("OSSM Ready to Play");
     delay(250);
 
     setup_done_ = true;
@@ -241,44 +268,77 @@ bool OSSM::FindHome()
 
 bool OSSM::DoSensorlessHoming()
 {
-    // TODO: Is there a better value for
-    constexpr float CURRENT_LIMIT = 0.03;
+    // Current limit in counts
+    constexpr uint32_t CURRENT_LIMIT = 100;
 
     // Set acceleration and enable stepper
     stepper_->setAcceleration(1000 * motor_properties_.stepsPerMillimeter);
     stepper_->enableOutputs();
 
     // Take a large average with motor enabled but not moving
-    float current_sensor_offset = GetAnalogAveragePercent(CURRENT_SENSOR_PIN, 1000);
+    for (int i = 0; i < CurrentSenseAvg.N_SAMPLES; ++i)
+    {
+        CurrentSenseAvg.AddSample(analogRead(CURRENT_SENSOR_PIN));
+    }
+
+    const int32_t current_sensor_offset = CurrentSenseAvg.Value();
 
     ui_.UpdateMessage("Finding Home Sensorless");
 
-    float current_value = GetAnalogAveragePercent(CURRENT_SENSOR_PIN, 200) - current_sensor_offset;
-    LogDebugFormatted("Finding home sensorless, Current: Offset: %0.4f, Value: %0.4f", current_sensor_offset,
-                      current_value);
+    int32_t current_value = 0;
+
+    LogDebugFormatted("Finding home sensorless, Current: Offset: %d, Value: %d",
+                      current_sensor_offset, current_value);
 
     stepper_->setSpeedInHz(25 * motor_properties_.stepsPerMillimeter);
 
     while (current_value < CURRENT_LIMIT)
     {
+        stepper_->move(25 * motor_properties_.stepsPerMillimeter);
+
         while (stepper_->isRunning() && current_value < CURRENT_LIMIT)
         {
-            current_value = GetAnalogAveragePercent(CURRENT_SENSOR_PIN, 100) - current_sensor_offset;
-            // LogDebugFormatted("%0.4f", current_value);
+            CurrentSenseAvg.AddSample(analogRead(CURRENT_SENSOR_PIN));
+
+            current_value = static_cast<int32_t>(CurrentSenseAvg.Value()) - current_sensor_offset;
         }
 
         if (current_value >= CURRENT_LIMIT)
         {
             break;
         }
-
-        stepper_->move(25 * motor_properties_.stepsPerMillimeter);
     }
 
-    stepper_->forceStopAndNewPosition(0);
-    stepper_->move(-geometry_.keepoutBoundary * motor_properties_.stepsPerMillimeter);
+    LogDebugFormatted("Current limit hit %d >= %d", current_value, CURRENT_LIMIT);
 
-    LogDebug("Current limit hit. Homing complete");
+    // We are currently at the end of travel + the keep out boundary
+    const uint32_t new_position =
+        motor_properties_.stepsPerMillimeter * (geometry_.physicalTravel + geometry_.keepoutBoundary);
+
+    LogDebugFormatted("Setting position to %u", new_position);
+
+    // Set home position
+    stepper_->forceStopAndNewPosition(new_position);
+
+    // Drive free of the switch to the end of travel
+    const int32_t stop_position = geometry_.physicalTravel * motor_properties_.stepsPerMillimeter;
+
+    stepper_->moveTo(stop_position, true);
+
+    // HACK: Need to call this twice or the stepper won't move
+    if (stepper_->moveTo(stop_position, true) != MOVE_OK)
+    {
+        LogError("Failed to move to 0");
+        SetLedsError();
+        for (;;)
+        {
+        }
+    }
+
+    LogDebug("Homing complete");
+    ui_.UpdateMessage("Homing complete");
+
+    vTaskDelay(100);
 
     return true;
 }
@@ -333,8 +393,6 @@ bool OSSM::DoSensorHoming()
 
             // Set home position
             stepper_->forceStopAndNewPosition(new_position);
-
-            // TODO: Fix stroke engine to allow front homing with thisIsHome
 
             // Drive free of the switch to the end of travel
             const int32_t stop_position = geometry_.physicalTravel * motor_properties_.stepsPerMillimeter;
@@ -423,6 +481,7 @@ void OSSM::ModeSpecificSetup()
     {
         case OSSM::RunMode::Simple:
             stepper_->enableOutputs();
+            ui_.UpdateMessage("OSSM Ready to Play");
             break;
 
         case OSSM::RunMode::StrokeEngine:
@@ -438,10 +497,13 @@ void OSSM::ModeSpecificSetup()
 
             ui_.SwitchToStrokeEngineUi();
             ui_.UpdateMessage(stroke_engine_.getPatternName(stroke_engine_.getPattern()));
+
+            stroke_engine_.startPattern();
             break;
 
 #ifdef OSSM_XTOYS
         case OSSM::RunMode::XToys:
+            ui_.UpdateMessage("OSSM XToys Mode Ready");
             stepper_->setAcceleration(max_acceleration_in_steps_);
             xtoys_.Setup();
             break;
