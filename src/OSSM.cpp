@@ -53,7 +53,7 @@ float GetAnalogAveragePercent(int pin_number, uint16_t sample_count)
 
 OSSM::OSSM() : encoder_(ENCODER_A, ENCODER_B), ui_(REMOTE_ADDRESS, REMOTE_SDA, REMOTE_CLK)
 {
-    motor_properties_ = {.maxSpeed = 60 * (MAX_SPEED_IN_MM_PER_SECOND / (PULLEY_TOOTH_COUNT * BELT_PITCH_IN_MM)),
+    motor_properties_ = {.maxSpeed = 70 * (MAX_SPEED_IN_MM_PER_SECOND / (PULLEY_TOOTH_COUNT * BELT_PITCH_IN_MM)),
                          .maxAcceleration = MAX_ACCELERATION_IN_MM_PER_SS,
                          .stepsPerMillimeter = MOTOR_STEPS_PER_REVOLUTION / (PULLEY_TOOTH_COUNT * BELT_PITCH_IN_MM),
                          .invertDirection = true,
@@ -269,7 +269,7 @@ bool OSSM::FindHome()
 bool OSSM::DoSensorlessHoming()
 {
     // Current limit in counts
-    constexpr uint32_t CURRENT_LIMIT = 100;
+    constexpr int32_t CURRENT_LIMIT = 100;
 
     // Set acceleration and enable stepper
     stepper_->setAcceleration(1000 * motor_properties_.stepsPerMillimeter);
